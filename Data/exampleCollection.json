@@ -1,0 +1,29 @@
+{
+  "Name": "Example collection",
+  "EndPoint": "*",
+  "HttpPort": 7000,
+  "HttpsPort": 7001,
+  "Controllers": [
+    {
+      "Path": "test",
+      "Method": "GET",
+      "Status": 200,
+      "ContentType": "application/text",
+      "Body": "GET Example"
+    },
+    {
+      "Path": "test",
+      "Method": "POST",
+      "Status": 201,
+      "ContentType": "application/text",
+      "Body": "POST Example"
+    },
+    {
+      "Path": "test",
+      "Method": "DELETE",
+      "Status": 200,
+      "ContentType": "application/text",
+      "Body": "DELETE Example"
+    }
+  ]
+}
