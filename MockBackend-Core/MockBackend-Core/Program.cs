@@ -1,16 +1,13 @@
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using MockBackend_Core.Models;
 using MockBackend_Core.Models.Collection;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Threading.Tasks;
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.Threading;
 
 namespace MockBackend_Core
 {
@@ -31,8 +28,25 @@ namespace MockBackend_Core
 
             string json = File.ReadAllText(startupModel.CollectionPath);
             CollectionModel collectionModel = JsonSerializer.Deserialize<CollectionModel>(json) ?? throw new Exception($"Failed to parse {startupModel.CollectionPath}");
+            Console.WriteLine($"Using collection {collectionModel.Name}");
+            CancellationTokenSource cancellationToken = new();
+            Task hostTask = CreateHostBuilder(startupModel, collectionModel).Build().RunAsync(cancellationToken.Token);
 
-            CreateHostBuilder(startupModel, collectionModel).Build().Run();
+            string command;
+            while ((command = Console.ReadLine()?.ToUpper() ?? "") != "Q") {
+                switch (command)
+                {
+                    //TODO: Hot reloading of paths etc
+                    case "RELOAD":
+                        cancellationToken.Cancel();
+                        Task.WaitAll(hostTask);
+                        cancellationToken = new();
+                        json = File.ReadAllText(startupModel.CollectionPath);
+                        collectionModel = JsonSerializer.Deserialize<CollectionModel>(json) ?? throw new Exception($"Failed to parse {startupModel.CollectionPath}");
+                        hostTask = CreateHostBuilder(startupModel, collectionModel).Build().RunAsync(cancellationToken.Token);
+                        break;
+                }
+            }
         }
 
         public static IHostBuilder CreateHostBuilder(StartupArgsModel startupModel, CollectionModel collection) {

@@ -15,6 +15,7 @@
       "Path": "test",
       "Method": "POST",
       "Status": 201,
+      "Delay": 2000,
       "ContentType": "application/text",
       "Body": "POST Example"
     },
@@ -24,6 +25,13 @@
       "Status": 200,
       "ContentType": "application/text",
       "Body": "DELETE Example"
+    },
+    {
+      "Path": "movie/full",
+      "Method": "GET",
+      "Status": 200,
+      "ContentType": "application/mp4",
+      "BodyFile": "../../Data/sample_960x540.mp4"
     }
   ]
 }

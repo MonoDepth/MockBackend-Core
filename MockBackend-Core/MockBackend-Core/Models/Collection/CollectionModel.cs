@@ -9,8 +9,8 @@ namespace MockBackend_Core.Models.Collection
     {
         public string Name { get; set; } = "Unamed Collection";
         public string EndPoint { get; set; } = "*";
-        public int HttpPort { get; set; } = 80;
-        public int HttpsPort { get; set; } = 443;
+        public int HttpPort { get; set; } = 0;
+        public int HttpsPort { get; set; } = 0;
         public List<ControllerModel> Controllers { get; set; } = new();
     }
 }

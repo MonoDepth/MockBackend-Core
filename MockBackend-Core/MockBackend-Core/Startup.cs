@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using MockBackend_Core.Models.Collection;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -48,9 +49,53 @@ namespace MockBackend_Core
                             }
                         }
 
+                        if (controller.Delay > 0)
+                        {
+                            await Task.Delay(controller.Delay);
+                        }
+
                         context.Response.StatusCode = controller.Status;
                         context.Response.ContentType = controller.ContentType;
-                        await context.Response.WriteAsync(controller.Body);
+                        if (controller.BodyFile != "")
+                        {
+                            if (!File.Exists(controller.BodyFile))
+                            {
+                                throw new Exception($"Cannot find specified file {controller.BodyFile}");
+                            }
+
+                            var fileStream = File.OpenRead(controller.BodyFile);
+                            context.Response.ContentLength = fileStream.Length;
+                            await context.Response.StartAsync();
+                            var bodyWriter = context.Response.Body;                               
+
+                            int bytesToRead = 10000;
+                            byte[] buffer = new byte[bytesToRead];
+                            int length;
+                            do
+                            {
+                                if (!context.RequestAborted.IsCancellationRequested)
+                                {
+
+                                    length = await fileStream.ReadAsync(buffer.AsMemory(0, bytesToRead));
+
+                                    await bodyWriter.WriteAsync(buffer.AsMemory(0, length));
+
+                                    await bodyWriter.FlushAsync();
+
+                                    buffer = new byte[bytesToRead];
+                                }
+                                else
+                                {
+                                    length = -1;
+                                }
+                            } while (length > 0);
+
+                            await context.Response.CompleteAsync();
+                        }
+                        else
+                        {
+                            await context.Response.WriteAsync(controller.Body);
+                        }
                     });
 
                     switch (controller.Method.ToUpper())
