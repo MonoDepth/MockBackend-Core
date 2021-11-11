@@ -8,11 +8,14 @@ using System.IO;
 using System.Threading.Tasks;
 using System.Text.Json;
 using System.Threading;
+using MockBackend_Core.Extensions;
+using MockBackend_Core.EndpointCore;
 
 namespace MockBackend_Core
 {
     public class Program
     {
+        static CustomEndpointDataSource DataSource { get; set; } = new CustomEndpointDataSource();
         public static void Main(string[] args)
         {
             var startupModel = CreateStartupArgModel(SanitizeArgs(args));            
@@ -30,7 +33,8 @@ namespace MockBackend_Core
             CollectionModel collectionModel = JsonSerializer.Deserialize<CollectionModel>(json) ?? throw new Exception($"Failed to parse {startupModel.CollectionPath}");
             Console.WriteLine($"Using collection {collectionModel.Name}");
             CancellationTokenSource cancellationToken = new();
-            Task hostTask = CreateHostBuilder(startupModel, collectionModel).Build().RunAsync(cancellationToken.Token);
+            IHost host = CreateHostBuilder(startupModel, collectionModel).Build();
+            Task hostTask = host.RunAsync(cancellationToken.Token);
 
             string command;
             while ((command = Console.ReadLine()?.ToUpper() ?? "") != "Q") {
@@ -45,13 +49,27 @@ namespace MockBackend_Core
                         collectionModel = JsonSerializer.Deserialize<CollectionModel>(json) ?? throw new Exception($"Failed to parse {startupModel.CollectionPath}");
                         hostTask = CreateHostBuilder(startupModel, collectionModel).Build().RunAsync(cancellationToken.Token);
                         break;
+                    case "REFRESH":
+                        json = File.ReadAllText(startupModel.CollectionPath);
+                        collectionModel = JsonSerializer.Deserialize<CollectionModel>(json) ?? throw new Exception($"Failed to parse {startupModel.CollectionPath}");
+                        DataSource.UpdateControllerCollection(collectionModel.Controllers);                        
+                        break;
+                    case "TESTADD":
+                        DataSource.Controllers.Add(new ControllerModel
+                        {
+                            Body = "TEST ADD",
+                            Method = "GET",
+                            Status = 200,
+                            Path = "testadd"
+                        });
+                        break;
                 }
             }
         }
 
         public static IHostBuilder CreateHostBuilder(StartupArgsModel startupModel, CollectionModel collection) {
             var urls = new List<string>();
-
+            DataSource.UpdateControllerCollection(collection.Controllers);
             int httpPort = startupModel.HttpPort ?? collection.HttpPort;
             int httpsPort = startupModel.HttpsPort ?? collection.HttpsPort;
 
@@ -71,8 +89,12 @@ namespace MockBackend_Core
                     webBuilder.UseUrls(urls.ToArray());
                     webBuilder.UseStartup((x) =>
                     {
-                        return new Startup(collection.Controllers);
+                        return new Startup(x.Configuration, collection.Controllers);
                     });
+                })
+                .ConfigureServices(services => 
+                {
+                    services.AddCustomEndpoints(DataSource);
                 });
         }
 
