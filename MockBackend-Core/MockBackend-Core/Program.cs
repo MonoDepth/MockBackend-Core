@@ -10,12 +10,14 @@ using System.Text.Json;
 using System.Threading;
 using MockBackend_Core.Extensions;
 using MockBackend_Core.EndpointCore;
+using MockBackend_Core.Proxy;
 
 namespace MockBackend_Core
 {
     public class Program
     {
         static CustomEndpointDataSource DataSource { get; set; } = new CustomEndpointDataSource();
+        static ProxyServer proxyServer = new ProxyServer("127.0.0.1", 7652);
         public static void Main(string[] args)
         {
             var startupModel = CreateStartupArgModel(SanitizeArgs(args));            
@@ -35,6 +37,10 @@ namespace MockBackend_Core
             CancellationTokenSource cancellationToken = new();
             IHost host = CreateHostBuilder(startupModel, collectionModel).Build();
             Task hostTask = host.RunAsync(cancellationToken.Token);
+            if (!proxyServer.Start(out string error))
+            {
+                Console.WriteLine($"Failed to start proxy server - {error}");
+            }
 
             string command;
             while ((command = Console.ReadLine()?.ToUpper() ?? "") != "Q") {
@@ -100,23 +106,6 @@ namespace MockBackend_Core
 
         public static Dictionary<string, string> SanitizeArgs(string[] args)
         {
-            /* return args.Select(arg =>
-             {
-                 if (arg.StartsWith("--"))
-                 {
-                     return arg[2..].ToUpper();
-                 }
-                 else if (arg.StartsWith("-") || arg.StartsWith("/"))
-                 {
-                     return arg[1..].ToUpper();
-                 }
-                 else
-                 {
-                     return arg.ToUpper();
-                 }
-             }).ToArray();
-            */
-            //List<KeyValuePair<string, string>> argMap = new();
             Dictionary<string, string> argMap = new();
             for (int i = 0; i < args.Length; i++)
             {
