@@ -7,6 +7,9 @@ using System.Net.Sockets;
 using System.Threading;
 using System.IO;
 using System.Text;
+using System.Diagnostics;
+using System.Net.Security;
+using MockBackend_Core.Extensions;
 
 namespace MockBackend_Core.Proxy
 {
@@ -37,21 +40,6 @@ namespace MockBackend_Core.Proxy
                         clientConnected.Reset();
                         server.BeginAcceptSocket(new AsyncCallback(HandleIncomingRequest), server);
                         clientConnected.WaitOne();
-                        /*
-                                            Console.WriteLine("Connection accepted.");
-
-                                            Console.WriteLine("Reading data...");
-
-                                            byte[] data = new byte[100];
-                                            int size = client.Receive(data);
-                                            Console.WriteLine("Recieved data: ");
-                                            for (int i = 0; i < size; i++)
-                                                Console.Write(Convert.ToChar(data[i]));
-
-                                            Console.WriteLine();
-
-                                            client.Close();
-                        */
                     }
                 });
                 listenerThread.Start();
@@ -84,25 +72,18 @@ namespace MockBackend_Core.Proxy
         static void HandleIncomingRequest(IAsyncResult ar)
         {
             TcpListener listener = (TcpListener?)ar.AsyncState ?? throw new Exception("Async result was null");
+            
             Socket clientSocket = listener.EndAcceptSocket(ar);
             Console.WriteLine($"Incoming client {clientSocket.RemoteEndPoint}");
             clientConnected.Set();
 
-            // Process the connection here. (Add the client to a
-            // server table, read data, etc.)
-            byte[] buffer = new byte[32];
-            string tmp = "";
-
-            while (clientSocket.Available > 0)
-            {
-                int gotBytes = clientSocket.Receive(buffer);
-                tmp += Encoding.UTF8.GetString(buffer, 0, gotBytes);                
-            }
-
+            // Process the connection here. (Add the client to a server table, read data, etc.)
             List<string> requestHeaders = new();
 
+            string rawClientRequestData = GetClientResponse(clientSocket);
+
             // Dirty split, RFC 5322 section 2.2 states more rules for identifying a header, TODO
-            string[] rawContent = tmp.Split(LINE_SEPARATOR);
+            string[] rawContent = rawClientRequestData.Split(LINE_SEPARATOR);
             bool receivingBody = false;
             string body = "";
             for (int i = 0; i < rawContent.Length; i++)
@@ -139,71 +120,107 @@ namespace MockBackend_Core.Proxy
                 string httpVersion = requestStart[2].ToUpper();
 
                 // TODO look for pattern match and intercept request or forward to the intended endpoint and return the response to the client
-                HttpWebRequest forwardedRequest = WebRequest.CreateHttp(host);
-                forwardedRequest.Method = method;
-                forwardedRequest.ProtocolVersion = Version.Parse(httpVersion[5..]);
-                forwardedRequest.Timeout = 5000;
-                if (body != "")
+                // TODO HTTPS is broken, only HTTP works right now
+                bool isConnectRequest = method == "CONNECT";
+                if (host.Contains("://"))
                 {
-                    using StreamWriter writer = new(forwardedRequest.GetRequestStream());
-                    writer.Write(body);
+                    host = host.Remove(0, host.IndexOf("://") + 3);
                 }
-                requestHeaders.ForEach(header => forwardedRequest.Headers.Add(header));
+                string[] splitHost = host.Split(':');
+                int port = splitHost.Length > 1 ? int.Parse(splitHost[1]) : 80;
+                TcpClient forwardedRequest = new();
+                forwardedRequest.Connect(splitHost[0].TrimEnd('/'), port);
+                Stream forwardedRequestStream = /*isConnectRequest ? new SslStream(forwardedRequest.GetStream()) : */ forwardedRequest.GetStream();
 
-                int statusCode = -1;
-                string reason = "";
-                HttpWebResponse? forwardedResponse;
-                try {
-                    forwardedResponse = (HttpWebResponse)forwardedRequest.GetResponse();
-                    statusCode = (int)forwardedResponse.StatusCode;
-                    reason = forwardedResponse.StatusDescription;
-                }
-                catch (WebException exception)
+                // Could be used to decrypt the traffic before sending it to the server
+                // But in the forward case we don't care about the content and only acting as a passthrough proxy
+                // Decrypting would require a locally trusted homemade certificate
+
+                /*if (forwardedRequestStream is SslStream sslStream)
                 {
-                    forwardedResponse = (HttpWebResponse?)exception.Response;
-                    statusCode = (int?)forwardedResponse?.StatusCode ?? -1;
-                    reason = forwardedResponse?.StatusDescription ?? "Timeout";
+                    sslStream.AuthenticateAsClient(splitHost[0].TrimEnd('/'));
                 }
+                */
 
-
-                string responseLine = $"{httpVersion} {statusCode} {reason}{LINE_SEPARATOR}";
-                if (forwardedResponse != null)
+                // If we're getting a CONNECT request we're going to open a tunnel to the server and signal the client to start sending the encrypted data
+                if (isConnectRequest)
                 {
-                    foreach (string header in forwardedResponse.Headers)
+                    //See RFC 7230 section 3.1.2 for the status-line response format
+                    //HTTP-version SP status-code SP reason-phrase CRLF
+                    string responseLine = $"{httpVersion} 200 OK{LINE_SEPARATOR}{LINE_SEPARATOR}";
+                    clientSocket.Send(responseLine.AsBytes());
+                    TunnelRequest(clientSocket, forwardedRequestStream);
+                }
+                else
+                {
+                    forwardedRequestStream.Write(rawClientRequestData.AsBytes());
+                    Stopwatch timeoutStopWatch = new();
+                    timeoutStopWatch.Start();
+                    while (forwardedRequestStream.CanSeek && forwardedRequestStream.Length == 0 && timeoutStopWatch.ElapsedMilliseconds < 60000)
                     {
-                        // Header specification in RFC 7230 section 3.2
-                        responseLine += $"{header}: {forwardedResponse.Headers[header]}{LINE_SEPARATOR}";
+                        Thread.Sleep(100);
                     }
-
-                    responseLine += LINE_SEPARATOR;
-                    clientSocket.Send(Encoding.UTF8.GetBytes(responseLine));
-
-                    /*using BinaryReader responseStream = new(forwardedResponse.GetResponseStream());
-
-                    if (responseBody != "")
+                    timeoutStopWatch.Stop();
+                
+                    if (forwardedRequestStream.CanRead)
                     {
-                        responseLine += responseBody + LINE_SEPARATOR;
-                    }*/
-                    using BinaryReader responseStream = new(forwardedResponse.GetResponseStream());
-                    while (responseStream.PeekChar() > -1)
-                    {
-                        clientSocket.Send(responseStream.ReadBytes(32));
+                        ForwardRequestToClient(clientSocket, forwardedRequestStream);
                     }
-                    clientSocket.Send(Encoding.UTF8.GetBytes(LINE_SEPARATOR));
+                    else
+                    {
+                        string responseLine = $"{httpVersion} 504 Gateway Timeout{LINE_SEPARATOR}{LINE_SEPARATOR}";
+                        clientSocket.Send(responseLine.AsBytes());
+                    }
                 }
-
-              /*  if (forwardedResponse != null)
-                {
-                    using BinaryReader responseStream = new(forwardedResponse.GetResponseStream());
-                    while (responseStream.PeekChar() > -1)
-                    {
-                        clientSocket.Send(responseStream.ReadBytes(32));
-                    }
-                }*/
-                //clientSocket.Send(Encoding.UTF8.GetBytes("\r\n"));
+                forwardedRequestStream.Close();
             }
-            
-            clientSocket.Close();
+
+            clientSocket.Close();            
+        }
+
+        private static string GetClientResponse(Socket client)
+        {
+            byte[] buffer = new byte[32];
+            string rawClientRequestData = "";
+            while (client.Available > 0)
+            {
+                int gotBytes = client.Receive(buffer);
+                rawClientRequestData += buffer.AsString(gotBytes);
+            }
+            return rawClientRequestData;
+        }
+
+        private static void TunnelRequest(Socket client, Stream server)
+        {
+            while (client.Available > 0)
+            {
+                string clientResponse = GetClientResponse(client);
+                server.Write(clientResponse.AsBytes());
+                server.Flush();
+                ForwardRequestToClient(client, server);
+            }
+        }
+
+        private static void ForwardRequestToClient(Socket client, Stream server)
+        {
+            byte[] buffer;
+            int bytesRead;
+
+            if (!server.CanRead)
+            {
+                return;
+            }
+           
+            do
+            {
+                buffer = new byte[256];
+                bytesRead = server.Read(buffer, 0, buffer.Length);
+                if (bytesRead > 0)
+                {
+                    string tmp = buffer.AsString(bytesRead);
+                    client.Send(buffer, bytesRead, SocketFlags.None);
+                }
+            } while (bytesRead > 0);
         }
     }
 }
