@@ -144,13 +144,27 @@ namespace MockBackend_Core.Proxy
                 */
 
                 // If we're getting a CONNECT request we're going to open a tunnel to the server and signal the client to start sending the encrypted data
+                // We're going to act as a middleman and catch the data before sending it to the client (since we might want to redirect the request to the mock server)
                 if (isConnectRequest)
                 {
                     //See RFC 7230 section 3.1.2 for the status-line response format
                     //HTTP-version SP status-code SP reason-phrase CRLF
-                    string responseLine = $"{httpVersion} 200 OK{LINE_SEPARATOR}{LINE_SEPARATOR}";
+                    string responseLine = $"{httpVersion} 200 OK{LINE_SEPARATOR}{LINE_SEPARATOR}";                    
                     clientSocket.Send(responseLine.AsBytes(Encoding.UTF8));
-                    TunnelRequest(clientSocket, forwardedRequest);
+                    Stream networkStream = new NetworkStream(clientSocket);
+                    SslStream sslStream = new SslStream(networkStream);
+                    sslStream.AuthenticateAsServer(new SslServerAuthenticationOptions()
+                    {
+                        AllowRenegotiation = true,
+                        ApplicationProtocols = new List<SslApplicationProtocol>() { SslApplicationProtocol.Http11, SslApplicationProtocol.Http2 },
+                        EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls11 | System.Security.Authentication.SslProtocols.Tls13,
+                        ServerCertificate = new System.Security.Cryptography.X509Certificates.X509Certificate("certificate.p12"),
+                        RemoteCertificateValidationCallback = (a, b, c, d) => true
+                    });
+                    using SslStream serverStream = new SslStream(forwardedRequest.GetStream(), true);
+                    serverStream.AuthenticateAsClient(splitHost[0].TrimEnd('/'));
+                    ForwardRequestToStream(sslStream, serverStream);
+                    TunnelRequest(sslStream, serverStream, splitHost[0].TrimEnd('/'));
                 }
                 else
                 {
@@ -171,8 +185,9 @@ namespace MockBackend_Core.Proxy
                         clientSocket.Send(responseLine.AsBytes(Encoding.UTF8));
                     }
                     else if (clientSocket.Connected) 
-                    { 
-                        ForwardRequestToClient(clientSocket, forwardedRequestStream);
+                    {
+                        Stream networkStream = new NetworkStream(clientSocket);
+                        ForwardRequestToClient(networkStream, forwardedRequestStream);
                     }
                     /*                    
                     timeoutStopWatch.Stop();
@@ -205,32 +220,35 @@ namespace MockBackend_Core.Proxy
             return rawClientRequestData;
         }
 
-        private static void TunnelRequest(Socket client, TcpClient server)
+        private static void TunnelRequest(Stream client, Stream serverStream, string endpoint)
         {
-            using Stream serverStream = server.GetStream();
+
+            ForwardRequestToClient(client, serverStream);
+            return;
+            //using SslStream serverStream = new(server.GetStream(), true);
+            //serverStream.AuthenticateAsClient(endpoint);
             Stopwatch timeoutStopWatch = new();
             timeoutStopWatch.Start();
-            while ((client.Available + server.Available > 0) || timeoutStopWatch.ElapsedMilliseconds < 5000)
+            string serverResponse;
+            string clientResponse = "";
+            //((serverResponse = ReadToEnd(serverStream)) != "" || (clientResponse = ReadToEnd(client)) != "")
+            while ((serverResponse = ReadToEnd(serverStream)) != "" || (clientResponse = ReadToEnd(client)) != "" || timeoutStopWatch.ElapsedMilliseconds < 5000)
             {
-                if (client.Available + server.Available <= 0)
+                if (serverResponse == "" && clientResponse == "")
                 {
                     Thread.Sleep(100);
                     continue;
                 }
 
-                if (!(server.Connected && client.Connected))
+                if (clientResponse != "")
                 {
-                    break;
-                }
-
-                while (client.Available > 0)
-                {                    
-                    string clientResponse = GetClientResponse(client);
+                    //string clientResponse = GetClientResponse(client);
+                    //string clientResponse = ReadToEnd(client);
                     serverStream.Write(clientResponse.AsBytes(Encoding.UTF8));
+                    serverStream.Flush();
                 }
-                serverStream.Flush();
 
-                while (server.Available > 0)
+                if (serverResponse != "")
                 {
                     ForwardRequestToClient(client, serverStream);
                 }
@@ -239,7 +257,67 @@ namespace MockBackend_Core.Proxy
             timeoutStopWatch.Stop();
         }
 
-        private static void ForwardRequestToClient(Socket client, Stream server)
+        private static string ReadToEnd(Stream stream)
+        {
+            if (stream.CanRead)
+            {
+                //List<byte> bytes = new List<byte>();
+                byte[] buffer = new byte[1024];
+                int byteCount;
+                string rawClientRequestData = "";
+
+                //bytes.Add(byteData);
+
+                while ((byteCount = stream.Read(buffer, 0, buffer.Length)) == buffer.Length)
+                {
+                    //buffer[byteCount] = (byte)byteData;
+                    //byteCount++;
+                    if (byteCount == buffer.Length)
+                    {
+                        rawClientRequestData += buffer.AsString();
+                    }
+                }
+
+                /*if (byteCount > 0)
+                {
+                    rawClientRequestData += buffer.AsString(buffer.Length, Encoding.UTF8);
+                }
+                */
+                rawClientRequestData += buffer.AsString(byteCount);
+
+                return rawClientRequestData;
+            }
+            else
+            {
+                return "";
+            }
+        }
+
+        private static void ForwardRequestToStream(Stream from, Stream to)
+        {
+            byte[] buffer;
+            int bytesRead;
+            string tmp = $"{LINE_SEPARATOR}{LINE_SEPARATOR}";
+            if (!from.CanRead)
+            {
+                return;
+            }
+
+            do
+            {
+                buffer = new byte[256];
+                bytesRead = from.Read(buffer, 0, buffer.Length);
+                if (bytesRead > 0)
+                {
+                    tmp = buffer.AsString(bytesRead, Encoding.UTF8);
+                    to.Write(buffer, 0, bytesRead);
+                    
+                }
+            } while (bytesRead > 0 && !tmp.EndsWith($"{LINE_SEPARATOR}{LINE_SEPARATOR}"));
+            to.Flush();
+        }
+
+        private static void ForwardRequestToClient(Stream client, Stream server)
         {
             byte[] buffer;
             int bytesRead;
@@ -256,7 +334,7 @@ namespace MockBackend_Core.Proxy
                 if (bytesRead > 0)
                 {
                     string tmp = buffer.AsString(bytesRead, Encoding.UTF8);
-                    client.Send(buffer, bytesRead, SocketFlags.None);
+                    client.Write(buffer, 0, bytesRead);
                 }
             } while (bytesRead > 0);
         }

@@ -17,7 +17,7 @@ namespace MockBackend_Core
     public class Program
     {
         static CustomEndpointDataSource DataSource { get; set; } = new CustomEndpointDataSource();
-        static ProxyServer proxyServer = new ProxyServer("127.0.0.1", 7652);
+        static readonly ProxyServer proxyServer = new ProxyServer("127.0.0.1", 7652);
         public static void Main(string[] args)
         {
             var startupModel = CreateStartupArgModel(SanitizeArgs(args));            
