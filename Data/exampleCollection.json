@@ -3,6 +3,11 @@
   "EndPoint": "*",
   "HttpPort": 7000,
   "HttpsPort": 7001,
+  "ProxyServerEndpoint": "127.0.0.1",
+  "ProxyServerPort": 7652,
+  "DomainsToRelay": [
+    "sitedelta.com"
+  ],
   "Controllers": [
     {
       "Path": "test",
