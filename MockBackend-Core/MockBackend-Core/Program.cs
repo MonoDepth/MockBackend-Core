@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using System.Text.Json;
+using System.Linq;
 using System.Threading;
 using MockBackend_Core.Extensions;
 using MockBackend_Core.EndpointCore;
@@ -17,7 +18,7 @@ namespace MockBackend_Core
     public class Program
     {
         static CustomEndpointDataSource DataSource { get; set; } = new CustomEndpointDataSource();
-        static ProxyServer proxyServer = new ProxyServer("127.0.0.1", 7652);
+        static ProxyServer? proxyServer = null;
         public static void Main(string[] args)
         {
             var startupModel = CreateStartupArgModel(SanitizeArgs(args));            
@@ -37,10 +38,21 @@ namespace MockBackend_Core
             CancellationTokenSource cancellationToken = new();
             IHost host = CreateHostBuilder(startupModel, collectionModel).Build();
             Task hostTask = host.RunAsync(cancellationToken.Token);
-            if (!proxyServer.Start(out string error))
+
+            if (collectionModel.ProxyServerPort > 0)
             {
-                Console.WriteLine($"Failed to start proxy server - {error}");
+                proxyServer = new(collectionModel.ProxyServerEndpoint, collectionModel.ProxyServerPort) 
+                {
+                    DomainsToRelay = collectionModel.DomainsToRelay,
+                    MockBackendHttpPort = collectionModel.HttpPort,
+                    MockBackendHttpsPort = collectionModel.HttpsPort
+                };
+                if (!proxyServer.Start(out string error))
+                {
+                    Console.WriteLine($"Failed to start proxy server - {error}");
+                }
             }
+            
 
             string command;
             while ((command = Console.ReadLine()?.ToUpper() ?? "") != "Q") {
@@ -54,11 +66,39 @@ namespace MockBackend_Core
                         json = File.ReadAllText(startupModel.CollectionPath);
                         collectionModel = JsonSerializer.Deserialize<CollectionModel>(json) ?? throw new Exception($"Failed to parse {startupModel.CollectionPath}");
                         hostTask = CreateHostBuilder(startupModel, collectionModel).Build().RunAsync(cancellationToken.Token);
+
+                        if (proxyServer != null)
+                        {
+                            if (!proxyServer.Stop(out string error))
+                            {
+                                Console.WriteLine($"Failed to start proxy server - {error}");
+                            }
+                        }
+
+                        if (collectionModel.ProxyServerPort > 0)
+                        {
+                            proxyServer = new(collectionModel.ProxyServerEndpoint, collectionModel.ProxyServerPort)
+                            {
+                                DomainsToRelay = collectionModel.DomainsToRelay,
+                                MockBackendHttpPort = collectionModel.HttpPort,
+                                MockBackendHttpsPort = collectionModel.HttpsPort
+                            };
+                            proxyServer.DomainsToRelay = collectionModel.DomainsToRelay;
+                            if (!proxyServer.Start(out string error))
+                            {
+                                Console.WriteLine($"Failed to start proxy server - {error}");
+                            }
+                        }
+
                         break;
                     case "REFRESH":
                         json = File.ReadAllText(startupModel.CollectionPath);
                         collectionModel = JsonSerializer.Deserialize<CollectionModel>(json) ?? throw new Exception($"Failed to parse {startupModel.CollectionPath}");
-                        DataSource.UpdateControllerCollection(collectionModel.Controllers);                        
+                        DataSource.UpdateControllerCollection(collectionModel.Controllers);
+                        if (proxyServer != null)
+                        {
+                            proxyServer.DomainsToRelay = collectionModel.DomainsToRelay;
+                        }
                         break;
                     case "TESTADD":
                         DataSource.Controllers.Add(new ControllerModel
